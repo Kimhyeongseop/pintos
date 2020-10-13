@@ -18,6 +18,9 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
+#define NUM_ARGS 30
+#define FILE_LENGTH 16
+
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 
@@ -29,6 +32,8 @@ tid_t
 process_execute (const char *file_name) 
 {
   char *fn_copy;
+  const char *c;
+  char thread_name[FILE_LENGTH];
   tid_t tid;
 
   /* Make a copy of FILE_NAME.
@@ -38,12 +43,49 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
+  for(c = file_name ; *c != ' ' && *c != '\0' ; c++){
+    thread_name[(unsigned)c - (unsigned)file_name] = *c;
+  }
+  thread_name[(unsigned)c - (unsigned)file_name] = '\0';
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (thread_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   return tid;
 }
+
+void 
+construct_arg_stack(char **args, int cnt, void **esp_ad){
+  char *arg_ad[cnt];
+
+  for(int i = cnt-1 ; i >= 0 ; i--){
+    for(int j = strlen(args[i]) ; j >= 0 ; j--){
+      (*esp_ad)--;
+      **(char **)esp_ad = args[i][j];
+    }
+    arg_ad[i] = *esp_ad;
+  }
+
+  while((unsigned)(*esp_ad)%4 != 0)
+    (*esp_ad)--;
+
+  (*esp_ad) -= 4;
+
+  for(int i = cnt-1 ; i >= 0 ; i--){
+    (*esp_ad)-=4;
+    **(char ***)esp_ad = arg_ad[i];
+  }
+
+  (*esp_ad)-=4;
+  **(unsigned **)esp_ad = *(unsigned *)esp_ad+4;
+  (*esp_ad)-=4;
+  **(int **)esp_ad = cnt;
+  (*esp_ad)-=4;
+  **(int **)esp_ad = 0;
+  
+}
+
 
 /* A thread function that loads a user process and starts it
    running. */
@@ -51,8 +93,18 @@ static void
 start_process (void *file_name_)
 {
   char *file_name = file_name_;
+  char *args[NUM_ARGS];
+  char *save_ptr, *token;
+  int cnt = 0;
   struct intr_frame if_;
   bool success;
+
+  token = strtok_r(file_name, " ", &save_ptr);
+  while(token != NULL){
+    args[cnt] = token;
+    cnt++;
+    token = strtok_r(NULL, " ", &save_ptr);
+  }
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -61,11 +113,25 @@ start_process (void *file_name_)
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
 
+
+  if(success){
+    construct_arg_stack(args, cnt, &if_.esp);
+    thread_current()->load = true;
+    //hex_dump(if_.esp , if_.esp , PHYS_BASE - (unsigned)if_.esp , true);
+  }
+  sema_up(&thread_current()->load_sema);
+
   /* If load failed, quit. */
   palloc_free_page (file_name);
-  if (!success) 
-    thread_exit ();
 
+  if (!success){
+    list_remove (&thread_current()->child_elem);
+    thread_current()->load = false;
+    thread_exit();
+  }
+  
+  
+  
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
      threads/intr-stubs.S).  Because intr_exit takes all of its
@@ -74,6 +140,26 @@ start_process (void *file_name_)
      and jump to it. */
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
+}
+
+struct thread *
+find_child(tid_t tid){
+  struct thread *cur = thread_current();
+  struct thread *child_thread = NULL;
+  if(list_empty(&cur->child_list)){
+    return NULL;
+  }
+
+  for(struct list_elem *child = list_begin(&cur->child_list) ;
+    child != list_end(&cur->child_list) ;
+    child = list_next(child)){
+      struct thread *thr = list_entry(child, struct thread, child_elem);
+      if(tid == thr->tid){
+        child_thread = thr;
+        break;
+      }
+    }
+  return child_thread;
 }
 
 /* Waits for thread TID to die and returns its exit status.  If
@@ -86,9 +172,23 @@ start_process (void *file_name_)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
-  return -1;
+  struct thread* child = find_child(child_tid);
+  int exit_status;
+
+  if(!child){
+    return -1;
+  }
+
+  sema_down(&child->exit_sema);
+
+  list_remove(&child->child_elem);
+  exit_status = child->exit_status;
+
+  palloc_free_page(child);
+
+  return exit_status;
 }
 
 /* Free the current process's resources. */
@@ -101,6 +201,11 @@ process_exit (void)
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pagedir;
+
+  for(int i = 2 ; i < cur->fd ; i++){
+    file_close(cur->file[i]);
+  }
+
   if (pd != NULL) 
     {
       /* Correct ordering here is crucial.  We must set
@@ -228,6 +333,8 @@ load (const char *file_name, void (**eip) (void), void **esp)
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
+    t->running_file=file;
+    file_deny_write(file);
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr

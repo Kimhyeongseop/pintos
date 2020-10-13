@@ -9,7 +9,6 @@
 #include "threads/intr-stubs.h"
 #include "threads/palloc.h"
 #include "threads/switch.h"
-#include "threads/synch.h"
 #include "threads/vaddr.h"
 #ifdef USERPROG
 #include "userprog/process.h"
@@ -166,7 +165,7 @@ tid_t
 thread_create (const char *name, int priority,
                thread_func *function, void *aux) 
 {
-  struct thread *t;
+  struct thread *t, *cur;
   struct kernel_thread_frame *kf;
   struct switch_entry_frame *ef;
   struct switch_threads_frame *sf;
@@ -197,6 +196,13 @@ thread_create (const char *name, int priority,
   sf = alloc_frame (t, sizeof *sf);
   sf->eip = switch_entry;
   sf->ebp = 0;
+  
+  cur = thread_current();
+  t->parent = cur;
+  // if (t->load){
+  //   printf("dd\n");
+  list_push_back(&cur->child_list, &t->child_elem);
+  
 
   /* Add to run queue. */
   thread_unblock (t);
@@ -291,6 +297,9 @@ thread_exit (void)
      when it calls thread_schedule_tail(). */
   intr_disable ();
   list_remove (&thread_current()->allelem);
+  //list_remove (&thread_current()->child_elem);
+  thread_current()->exit = true;
+  sema_up(&thread_current()->exit_sema);
   thread_current ()->status = THREAD_DYING;
   schedule ();
   NOT_REACHED ();
@@ -462,6 +471,16 @@ init_thread (struct thread *t, const char *name, int priority)
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
+
+  list_init(&t->child_list);
+  sema_init(&t->load_sema, 0);
+  sema_init(&t->exit_sema, 0);
+  t->load = false;
+  t->exit = false;
+    
+
+  t->fd = 2;
+
   t->magic = THREAD_MAGIC;
 
   old_level = intr_disable ();
@@ -538,7 +557,7 @@ thread_schedule_tail (struct thread *prev)
   if (prev != NULL && prev->status == THREAD_DYING && prev != initial_thread) 
     {
       ASSERT (prev != cur);
-      palloc_free_page (prev);
+      //palloc_free_page (prev);
     }
 }
 
