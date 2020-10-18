@@ -199,8 +199,7 @@ thread_create (const char *name, int priority,
   
   cur = thread_current();
   t->parent = cur;
-  // if (t->load){
-  //   printf("dd\n");
+
   list_push_back(&cur->child_list, &t->child_elem);
   
 
@@ -297,8 +296,6 @@ thread_exit (void)
      when it calls thread_schedule_tail(). */
   intr_disable ();
   list_remove (&thread_current()->allelem);
-  //list_remove (&thread_current()->child_elem);
-  thread_current()->exit = true;
   sema_up(&thread_current()->exit_sema);
   thread_current ()->status = THREAD_DYING;
   schedule ();
@@ -476,7 +473,6 @@ init_thread (struct thread *t, const char *name, int priority)
   sema_init(&t->load_sema, 0);
   sema_init(&t->exit_sema, 0);
   t->load = false;
-  t->exit = false;
     
 
   t->fd = 2;

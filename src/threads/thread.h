@@ -24,6 +24,7 @@ typedef int tid_t;
 #define PRI_MIN 0                       /* Lowest priority. */
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
+#define NUM_FILES 130
 
 /* A kernel thread or user process.
 
@@ -101,14 +102,11 @@ struct thread
     struct semaphore exit_sema;
     struct semaphore load_sema;
 
-    struct file *running_file;
-
-    bool exit;
     bool load;
 
     int exit_status;
 
-    struct file *file[130];
+    struct file *file[NUM_FILES];
     int fd;
     
 #ifdef USERPROG

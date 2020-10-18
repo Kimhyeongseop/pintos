@@ -58,7 +58,7 @@ sys_exec(const char *cmd_line){
   struct thread *child = find_child(child_pid);
   sema_down(&child->load_sema);
   if(child->load == false)
-     return -1;
+    return -1;
   
   if(!child){
      return -1;

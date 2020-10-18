@@ -18,7 +18,7 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
-#define NUM_ARGS 30
+#define NUM_ARGS 128
 #define FILE_LENGTH 16
 
 static thread_func start_process NO_RETURN;
@@ -333,7 +333,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
-    t->running_file=file;
     file_deny_write(file);
 
   /* Read and verify executable header. */
