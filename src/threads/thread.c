@@ -22,6 +22,7 @@
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 static struct list ready_list;
+static struct list sleeping_list;
 
 /* List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
@@ -35,6 +36,8 @@ static struct thread *initial_thread;
 
 /* Lock used by allocate_tid(). */
 static struct lock tid_lock;
+
+static int64_t min_wake = INT64_MAX;
 
 /* Stack frame for kernel_thread(). */
 struct kernel_thread_frame 
@@ -91,6 +94,7 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
+  list_init (&sleeping_list);
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
@@ -114,6 +118,73 @@ thread_start (void)
 
   /* Wait for the idle thread to initialize idle_thread. */
   sema_down (&idle_started);
+}
+
+void
+thread_sleep(int64_t w){
+  struct thread *cur = thread_current ();
+  enum intr_level old_level;
+
+  ASSERT (!intr_context ());
+
+  old_level = intr_disable ();
+
+  if (cur != idle_thread) {
+    list_push_back (&sleeping_list, &cur->elem);
+    if(min_wake>w)
+      min_wake=w;
+    cur->wake =w;
+    thread_block();
+  }
+  intr_set_level (old_level);
+}
+
+int64_t
+min_wake_time(void){
+  return min_wake;
+}
+
+void update_min_wake(void){
+  struct list_elem *temp = list_begin(&sleeping_list);
+  struct list_elem *tail = list_end(&sleeping_list);
+
+  min_wake = INT64_MAX;
+
+  while (temp != tail){
+    struct thread *thr = list_entry(temp, struct thread, elem);
+    if (min_wake > thr->wake)
+      min_wake = thr->wake;
+
+    temp = list_next(temp);
+  }
+}
+
+void
+thread_wake(int64_t ticks){
+  
+  struct list_elem *temp = list_begin(&sleeping_list);
+  struct list_elem *tail = list_end(&sleeping_list);
+
+  while(temp != tail)
+  {
+    struct thread *thr = list_entry(temp, struct thread, elem);
+    
+    if(thr->wake <= ticks)
+      {
+        ASSERT(thr);
+        ASSERT(thr->status == THREAD_BLOCKED);
+
+        temp = list_remove(&thr->elem);
+        tail = list_end(&sleeping_list);
+
+        thread_unblock(thr);
+      }
+    else{
+      temp = list_next(temp);
+    }
+      
+  }
+update_min_wake();
 }
 
 /* Called by the timer interrupt handler at each timer tick.
