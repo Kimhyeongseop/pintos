@@ -5,12 +5,16 @@
 
    See hash.h for basic information. */
 
+#include <stdio.h>
+#include <list.h>
 #include "hash.h"
 #include "../debug.h"
 #include "threads/malloc.h"
-
-#define list_elem_to_hash_elem(LIST_ELEM)                       \
-        list_entry(LIST_ELEM, struct hash_elem, list_elem)
+#include "threads/thread.h"
+#include "filesys/file.h"
+#include "filesys/inode.h"
+#include "vm/page.h"
+#include "userprog/pagedir.h"
 
 static struct list *find_bucket (struct hash *, struct hash_elem *);
 static struct hash_elem *find_elem (struct hash *, struct list *,
@@ -428,3 +432,52 @@ remove_elem (struct hash *h, struct hash_elem *e)
   list_remove (&e->list_elem);
 }
 
+void
+print_hash (void){
+  struct thread *cur = thread_current();
+  struct hash hash = cur->hash;
+  int memory=0, swap=0, exec = 0;
+
+  printf("\n");
+  // printf("elements count : %d\n",hash.elem_cnt);
+  // printf("buckets count : %d\n", hash.bucket_cnt);
+  for(size_t i = 0 ; i < hash.bucket_cnt ; i++){
+    struct list *bucket = &hash.buckets[i];
+    //printf("bucket #%d 0x%x\n", i, bucket);
+    for(struct list_elem *temp = list_begin(bucket) ;
+        temp != list_end(bucket) ;
+        temp = list_next(temp)){
+          struct hash_elem *elem  = list_elem_to_hash_elem(temp);
+          struct spte *spte = hash_entry(elem, struct spte, hash_elem);
+          if(spte->state == MEMORY) memory++;
+          else if(spte->state == SWAP_DISK) swap++;
+          else exec++;
+          // printf("  spte : 0x%x, upage : 0x%x, offset %d, state: %d, kpage 0x%x, file 0x%x\n", 
+          //         spte, spte->upage,spte->offset,spte->state, pagedir_get_page(spte->pagedir, spte->upage),
+          //         spte->file);
+        }
+  }
+  printf("\nspte in memory : %d, in swap : %d, in exec : %d total %d\n\n", memory, swap, exec, memory+swap+exec);
+}
+
+ 
+struct hash_elem *
+find_spte (void *page_num){
+  struct hash hash = thread_current()->hash;
+  size_t bucket_id = hash_int(page_num) & (hash.bucket_cnt - 1);
+  struct list *bucket = &hash.buckets[bucket_id];
+  //printf("page_round_down : 0x%x, bucket_id : %d\n",page_num, bucket_id);
+
+  for(struct list_elem *temp = list_begin(bucket) ; 
+      temp != list_end(bucket) ;
+      temp = list_next(temp)){
+          struct spte *spte = hash_entry(list_elem_to_hash_elem(temp), struct spte, hash_elem);
+          if(spte->upage == page_num){
+            //printf("file is %d\n",inode_length(file_get_inode(spte->file)));
+            return &spte->hash_elem;
+          }
+      }
+
+  return NULL;
+
+}

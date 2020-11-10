@@ -3,6 +3,7 @@ use warnings;
 use tests::Algorithm::Diff;
 use File::Temp 'tempfile';
 use Fcntl qw(SEEK_SET SEEK_CUR);
+use Term::ANSIColor;
 
 sub fail;
 sub pass;
@@ -604,9 +605,9 @@ sub finish {
     close (RESULT);
 
     if ($verdict eq 'PASS') {
-	print STDOUT "pass $test\n";
+	print STDOUT "\033[1;36m", "pass ", "\033[0m", "$test\n";
     } else {
-	print STDOUT "FAIL $test\n";
+	print STDOUT "\033[1;31m", "FAIL ", "\033[0m", "$test\n";
     }
     print STDOUT "$_\n" foreach @messages;
 

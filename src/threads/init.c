@@ -36,6 +36,8 @@
 #include "devices/ide.h"
 #include "filesys/filesys.h"
 #include "filesys/fsutil.h"
+#include "vm/frame.h"
+#include "vm/swap.h"
 #endif
 
 /* Page directory with kernel mappings only. */
@@ -127,12 +129,18 @@ main (void)
   filesys_init (format_filesys);
 #endif
 
+  frame_table_init();
+  swap_disk_init();
+  swap_table_init();
+
   printf ("Boot complete.\n");
   
   /* Run actions specified on kernel command line. */
   run_actions (argv);
 
   /* Finish up. */
+  swap_table_destroy();
+
   shutdown ();
   thread_exit ();
 }

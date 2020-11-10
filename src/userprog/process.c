@@ -5,21 +5,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <hash.h>
 #include "userprog/gdt.h"
 #include "userprog/pagedir.h"
 #include "userprog/tss.h"
 #include "filesys/directory.h"
 #include "filesys/file.h"
 #include "filesys/filesys.h"
+#include "filesys/inode.h"
 #include "threads/flags.h"
 #include "threads/init.h"
+#include "threads/synch.h"
 #include "threads/interrupt.h"
 #include "threads/palloc.h"
+#include "threads/malloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "vm/page.h"
+#include "vm/frame.h"
 
 #define NUM_ARGS 128
 #define FILE_LENGTH 16
+
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -106,6 +113,7 @@ start_process (void *file_name_)
     token = strtok_r(NULL, " ", &save_ptr);
   }
 
+  init_spt(&thread_current()->hash);
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
@@ -122,16 +130,17 @@ start_process (void *file_name_)
   sema_up(&thread_current()->load_sema);
 
   /* If load failed, quit. */
-  palloc_free_page (file_name);
+  //palloc_free_page (file_name);
 
   if (!success){
+    palloc_free_page(file_name);
     list_remove (&thread_current()->child_elem);
     thread_current()->load = false;
     thread_exit();
   }
-  
-  
-  
+
+
+
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
      threads/intr-stubs.S).  Because intr_exit takes all of its
@@ -205,6 +214,31 @@ process_exit (void)
   for(int i = 2 ; i < cur->fd ; i++){
     file_close(cur->file[i]);
   }
+
+  //print_hash();
+
+//  for(unsigned i = 0 ; i < cur->hash.bucket_cnt ; i++){
+//     struct list *bucket = &cur->hash.buckets[i];
+
+//     int size = list_size(bucket);
+//     //printf("bucket size %d\n",size);    
+//     // for(struct list_elem *temp = list_begin(bucket) ;
+//     //     temp != list_end(bucket) ;
+//     //     temp = list_next(temp)){
+//     //       struct hash_elem *elem  = list_elem_to_hash_elem(temp);
+//     //       struct spte *spte = hash_entry(elem, struct spte, hash_elem);
+
+//     //       if(spte == 0xcccccccc){
+//     //         printf("cc in bucket %d, 0x%x!!\n",i,bucket);
+//     //         continue;
+//     //       } 
+
+//     //       //if(!delete_spte(&cur->hash, spte)) printf("delete failed\n");
+//     //     }
+//   }
+  destroy_spte(&cur->hash);
+  
+  //shutdown_power_off();
 
   if (pd != NULL) 
     {
@@ -319,7 +353,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
   off_t file_ofs;
   bool success = false;
   int i;
-
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
   if (t->pagedir == NULL) 
@@ -418,7 +451,9 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  //file_close (file);
+  if(file)
+    file_allow_write(file);
   return success;
 }
 
@@ -493,39 +528,42 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
 
+  //printf("read_bytes of %s is %d, ofs is %d\n",thread_current()->name,read_bytes,ofs);
+  //printf("file is 0x%x, upage is 0x%x\n", file,upage);
   file_seek (file, ofs);
   while (read_bytes > 0 || zero_bytes > 0) 
     {
+      //printf("upage loading : 0x%x\n",upage);
+      //printf("read_bytes is %d, zero_bytes is %d\n",read_bytes, zero_bytes);
+
       /* Calculate how to fill this page.
          We will read PAGE_READ_BYTES bytes from FILE
          and zero the final PAGE_ZERO_BYTES bytes. */
       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-      /* Get a page of memory. */
-      uint8_t *kpage = palloc_get_page (PAL_USER);
-      if (kpage == NULL)
-        return false;
+      struct spte *spte = malloc(sizeof(struct spte));
+      if(!spte) return false;
 
-      /* Load this page. */
-      if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
-        {
-          palloc_free_page (kpage);
-          return false; 
-        }
-      memset (kpage + page_read_bytes, 0, page_zero_bytes);
+      spte->file = file;
+      spte->upage = upage;
+      spte->read_bytes = page_read_bytes;
+      spte->zero_bytes = page_zero_bytes;
+      spte->offset = ofs;
+      spte->state = EXEC_FILE;
+      spte->writable = writable;
+      spte->pagedir = thread_current()->pagedir;
 
-      /* Add the page to the process's address space. */
-      if (!install_page (upage, kpage, writable)) 
-        {
-          palloc_free_page (kpage);
-          return false; 
-        }
+      create_spte(&thread_current()->hash, spte);
 
-      /* Advance. */
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
+      ofs += page_read_bytes;
       upage += PGSIZE;
+
+      //printf("file is 0x%x, file_inode length is %d\n",file, inode_length(file_get_inode(spte->file)));
+      //print_hash();
+
     }
   return true;
 }
@@ -535,19 +573,44 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 static bool
 setup_stack (void **esp) 
 {
-  uint8_t *kpage;
-  bool success = false;
+  void *upage = ((uint8_t *) PHYS_BASE) - PGSIZE;
+  struct spte *spte = malloc(sizeof(struct spte));
 
-  kpage = palloc_get_page (PAL_USER | PAL_ZERO);
-  if (kpage != NULL) 
+  uint8_t *kpage = frame_alloc(PAL_USER, spte);
+  //printf("kpage for this process is 0x%x\n",kpage);
+  if (kpage != NULL)
     {
-      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
-      if (success)
-        *esp = PHYS_BASE;
-      else
-        palloc_free_page (kpage);
+      if (!install_page (upage, kpage, true))
+        { 
+          palloc_free_page (kpage);
+          free (spte);
+          return false;
+        }
+      *esp = PHYS_BASE;
+      memset (spte, 0, sizeof (struct spte));
+      spte->upage=upage;
+      spte->writable=1;
+      spte->state=MEMORY;
+      spte->kpage=kpage;
+      spte->pagedir = thread_current()->pagedir;
+      //printf("spte is 0x%x, upage is 0x%x\n", spte, spte->upage);
+      create_spte(&thread_current ()->hash, spte);
+      thread_current()->fault_esp = PHYS_BASE;
     }
-  return success;
+    return true;
+  // uint8_t *kpage;
+  // bool success = false;
+  
+  // kpage = palloc_get_page (PAL_USER | PAL_ZERO);
+  // if (kpage != NULL) 
+  //   {
+  //     success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
+  //     if (success)
+  //       *esp = PHYS_BASE;
+  //     else
+  //       palloc_free_page (kpage);
+  //   }
+  // return success;
 }
 
 /* Adds a mapping from user virtual address UPAGE to kernel
@@ -568,4 +631,9 @@ install_page (void *upage, void *kpage, bool writable)
      address, then map our page there. */
   return (pagedir_get_page (t->pagedir, upage) == NULL
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
+}
+
+bool 
+install_page_from_process(void *upage, void *kpage, bool writable){
+  return install_page(upage, kpage, writable);
 }

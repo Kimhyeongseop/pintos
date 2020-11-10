@@ -1,9 +1,16 @@
 #include "userprog/exception.h"
 #include <inttypes.h>
 #include <stdio.h>
+#include <hash.h>
 #include "userprog/gdt.h"
+#include "filesys/file.h"
+#include "filesys/inode.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+#include "vm/frame.h"
+#include "threads/synch.h"
+#include "threads/vaddr.h"
+#include "userprog/pagedir.h"
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -126,6 +133,7 @@ page_fault (struct intr_frame *f)
   bool write;        /* True: access was write, false: access was read. */
   bool user;         /* True: access by user, false: access by kernel. */
   void *fault_addr;  /* Fault address. */
+  void *esp = thread_current()->fault_esp < f->esp ? thread_current()->fault_esp : f->esp;
 
   /* Obtain faulting address, the virtual address that was
      accessed to cause the fault.  It may point to code or to
@@ -148,20 +156,64 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
-   //printf("page fault~!!\n");
-  struct thread *thr = thread_current();
-  thr->exit_status = -1;
-  printf("%s: exit(%d)\n",thr->name, -1);
-  thread_exit();
+   if(!fault_addr)
+   intr_dump_frame(f);
 
-  /* To implement virtual memory, delete the rest of the function
-     body, and replace it with code that brings in the page to
-     which fault_addr refers. */
-  printf ("Page fault at %p: %s error %s page in %s context.\n",
-          fault_addr,
-          not_present ? "not present" : "rights violation",
-          write ? "writing" : "reading",
-          user ? "user" : "kernel");
-  kill (f);
+
+  //printf("\nfault address is 0x%x\n",fault_addr);
+  bool load = false;
+  if (not_present && fault_addr> USER_VADDR_BOTTOM && is_user_vaddr(fault_addr)){
+
+     struct spte *spte = get_spte(fault_addr);
+     //struct spte *esp_spte = get_spte(esp);
+     //void *kpage = pagedir_get_page(spte->pagedir, spte->upage);
+     //printf("spte is 0x%x, state is %d, kpage is 0x%x\n",spte, spte->state, kpage);
+     //print_hash();     
+
+     //struct spte *esp_spte = get_spte(f->esp);
+     //printf("esp is 0x%x, fault address is 0x%x\n",f->esp,fault_addr);
+     //printf("file is 0x%x, file_inode_length is %d\n",spte->file, inode_length(file_get_inode(spte->file)));
+     if(spte){
+        if(spte->state == EXEC_FILE){
+            load = load_from_exec(spte);
+        }
+        else if(spte->state == SWAP_DISK){
+            load = load_from_swap(spte);
+        }
+     }else if ((fault_addr >= esp - STACK_HEURISTIC) && (fault_addr != esp)){
+        //printf("esp page fault in esp 0x%x, fault_addr 0x%x\n",esp,fault_addr);
+        load = stack_growth(fault_addr);
+     }
+     else{
+      //printf("page fault~!!\n");
+      //printf("esp page fault in esp 0x%x, fault_addr 0x%x\n",esp,fault_addr);
+      struct thread *thr = thread_current();
+      thr->exit_status = -1; 
+      printf("%s: exit(%d)\n",thr->name, -1);
+      thread_exit();
+     }
+  }else{
+      struct thread *thr = thread_current();
+      thr->exit_status = -1;
+      printf("%s: exit(%d)\n",thr->name, -1);
+      thread_exit();
+
+      /* To implement virtual memory, delete the rest of the function
+         body, and replace it with code that brings in the page to
+         which fault_addr refers. */
+      printf ("Page fault at %p: %s error %s page in %s context.\n",
+               fault_addr,
+               not_present ? "not present" : "rights violation",
+               write ? "writing" : "reading",
+               user ? "user" : "kernel");
+      kill (f);
+  }
+  if(!load){
+      print_frame_list();
+      struct thread *thr = thread_current();
+      thr->exit_status = -1;
+      printf("%s: exit(%d)\n",thr->name, -1);
+      thread_exit();
+  }
 }
 
